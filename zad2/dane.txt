@@ -1,7 +1,8 @@
 .DATA
 dane1 segment
+
 ;ASCII CODE: 0 SIGN:  
-A_font db 00000000b,
+bitmapa db 00000000b,
 00000000b,
 00000000b,
 00000000b,
@@ -1155,3 +1156,13 @@ db 00000000b,
 00000000b,
 00000000b
 
+;-----RESZTA DANYCH-----------------------------------
+zoom    db 4 dup('$')
+tekst   db 240 dup('$')
+zoom_int db 0
+
+error_zla_liczba_argumentow db 'Zla liczba argumentow! Poprawne uruchomienie: program.exe <zoom> <tekst>$'
+error_zly_zoom db 'Niepoprawny argument opisujacy zoom. Wybierz liczbe calkowita z zakresu [1, 25]!$'
+error_zle_znaki_w_zoomie db 'W zoomie sa znaki innie niz cyfry!$'
+error_brak_miejsca db 'Brak miejsca na tekst$'
+dane1 ends

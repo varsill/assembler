@@ -1,0 +1,521 @@
+
+
+.MODEL SMALL
+INCLUDE dane.txt
+
+.CODE
+.386
+code1 segment
+
+
+
+start:
+	;INICJUJEMY STOS
+    mov sp, offset wstosu
+    mov ax, seg wstosu
+    mov ss, ax
+
+
+	;WCZYTUJEMY DANE
+    call wczytanie_danych
+    mov ax, seg tekst
+    mov ds, ax
+    mov si, offset tekst
+	call zoom_string_to_int
+	
+	
+	;PRZECHODZIMY W TRYB GRAFICZNY
+	mov ax,13h					;tryb 320x200 256 				
+	Int 10h
+
+
+	;URUCHAMIAMY FUNKCJE WYPISUJACA TEKST
+	mov ax, seg tekst			
+	mov ds, ax
+	mov di, offset tekst				;w ds:[di] musi znalezc sie tekst
+	
+	;ustawiamy polozenie, z ktorego ma sie rozpoczac wypis tekstu	
+	mov bx, 0 							;wspolrzedna x
+	mov ax, 0							;wspolrzedna y
+	
+	call print_string
+	
+	
+	;CZEKAMY NA DOWOLNY ZNAK
+	call wait_for_key
+	
+	
+	;WRACAMY DO TRYBU TEKSTOWEGO
+	mov ax,3
+	int 10h
+	jmp koniec_programu
+
+
+
+
+koniec_programu:
+	mov ah,4ch  						; zakoncz program
+	int 021h							; i wroc do systemu
+
+
+wait_for_key:							;w petli czeka na klikniecie dowolnego znaku na klawiaturze
+	mov ax, 1
+	int 16h
+	jnz wait_for_key
+	ret
+	
+print_string:							;wypisuje string, ktory znajduje sie w pamieci w miejscu rozpoczynajacym sie od ds:[di]
+	;WCZYTUJEMY WARTOSC POWIEKSZENIA DO REJESTRU CL
+	mov ax, seg zoom_int
+	mov ds, ax
+	mov di, offset zoom_int
+	mov cl, byte ptr ds:[di]
+	
+	
+	;W CX WPISUJEMY WIELKOSC 8*zoom, czyli ile pikseli szerokosci i wysokosci ma jeden znak
+	mov al, 8
+	mul cl
+	mov cx, ax
+	push cx
+
+	
+	;SPRAWDZAMY, CZY NA EKRANIE JEST WYSTARCZAJACO DUZO MIEJSCA
+	mov ax, 320
+	div cl 								
+	mov bl, al							; bl = 320/cl					
+	mov ax, 200	
+	div cl								; al = 200/32
+	mul bl 								; ax=al*bl, czyli w ax mamy zapisane, ile znakow zmiesci sie na ekranie
+	call tekst_length					; cx = length(tekst)
+	
+	cmp ax, cx
+	jl blad_brak_miejsca 				; jesli ax<cx
+	
+	pop cx								; w cx trzymamy 8*zoom, czyli ile pikseli szerokosci i wysokosci ma jeden znak
+	
+	
+	;W ds:[di] TRZYMAMY WSKAZANIE NA TEKST
+	mov ax, seg tekst
+	mov ds, ax
+	mov di, offset tekst
+	
+	;INICJALIZACJA WSPOLRZEDNYCH, KTORE BEDA OPISYWAC POLOZENIE GORNEGO LEWEGO ROKU POSZCZEGOLNYCH ZNAKOW
+	mov bx,0							;wspolrzedna x
+	mov ax,0							;wspolrzednia y
+							
+	wypisz_znak_w_tym_wierszu:
+		mov dl, byte ptr ds:[di]							;w dl trzymamy odczytany znak
+		cmp dl, '$'
+		je koniec_funkcji_print_string						;jezeli natrafilismy na terminator stringa
+		
+		
+		;WYPISUJEMY ZNAK W dl NA EKRAN W MIEJSCU (bx, ax)
+		call print_letter
+		add bx, cx											;przesuwamy sie o szerokosc_litery pikseli w prawo
+		inc di												;przesuwamy sie na nastepny znak w tekscie
+		
+		
+		;JEZELI bx<(320-szerokosc_litery+1) <=> JEST MIEJSCE  NA ZNAK W TYM MIEJSCU to wracamy do wypisz_znak_w_tym_wierszu
+		push ax
+		mov ax, 320
+		sub ax, cx
+		inc ax
+		cmp bx, ax
+		pop ax
+		jle wypisz_znak_w_tym_wierszu
+		
+		
+	;JEZELI W WIERSZU NIE ZMIESCILBY SIE KOLEJNY ZNAK
+	mov bx, 0												;ustawiamy wspolrzedna x na 0
+	add ax, cx												;przesuwamy sie o wysokosc_litery w dol
+	jmp wypisz_znak_w_tym_wierszu							
+	koniec_funkcji_print_string:
+	ret
+
+
+tekst_length: 							;funkcja w cl zwraca dlugosc tekstu
+	push ax
+	
+	;WCZYTUJEMY DO ds:[di] poczatek tekstu
+	mov ax, seg tekst
+	mov ds, ax
+	mov di, offset tekst
+	
+	mov cx, 0					;w cx bedziemy trzymac liczbe znakow, ktore juz przetworzylismy
+    licz_dalej:						;iterujemy po znakach tak dlugo, jak nie doszlismy do terminatora
+		mov dl, byte ptr ds:[di]							;w dl trzymamy aktualnie przetwarzany znak
+		cmp dl, '$'
+		je koniec_funkcji_tekst_length						;jezeli doszlismy do konca tekstu
+		inc cx												;zwiekszamy licznik znakow
+		inc di												;przesuwamy sie na kolejny znak
+		jmp licz_dalej
+	
+	koniec_funkcji_tekst_length:	
+	dec cx													;zmniejszamy cx o 1, aby nie uwzgledniac w dlugosci tekstu znaku terminatora
+	pop ax
+	ret
+
+print_letter: 							; wypisuje znak o kodzie ascii przechowywanym w dl, na ekranie w pozycji (bx, ax) opisujacej polozenie gornego lewego rogu znaku 
+	pusha
+	
+	
+	; W ds ZAPISUJEMY SEGMENT DANYCH OPISUJACYCH BITMAPY ZNAKOW
+	push ax
+	mov ax, seg bitmapa
+	mov ds, ax
+	pop ax
+
+	mov ch, 0					;inicjalizujemy ch, ktore iteruje po wierszach
+	
+	;------------------------------------------------------------------------------------------------------------------------------------PRZECHODZI PO WIERSZACH BITMAPY------------------------------------------------------------------------------------------------------
+	przejdz_wiersz_bitmapy: 				;dopoki ch<80
+		
+		push cx					;zachowujemy wartosci licznika
+		push ax
+		movzx cx, ch
+		mov al, 8
+		mul dl 					
+		mov di, OFFSET bitmapa
+		add di, ax 				;di przechowuje numer pierwszego bajt, ktorym rozpoczyna sie bitmapa opisujaca dana litere 
+		pop ax
+		add di, cx 				;di trzyma teraz numer konkretnego bajty danych, ktory powinien byc wypisany w tym wierszu (w ch trzymamy bowiem numer wiersza)
+		pop cx
+	
+		
+		;W dh ZAPISUJEMY BAJT OPISUJACY AKTUALNIE WYPISYWANY WIERSZ ZNAKU
+		push ax
+		mov ax, seg bitmapa
+		mov ds, ax
+		pop ax
+		mov dh,  byte ptr ds:[di]
+		push ax					;zapisujemy ax, tak, aby przetrzymywalo wspolrzedna y
+		mov cl,0				;inicjalizujemy iterator cx przechodzacy po powtarzanych wierszach 
+		
+		;---------------------------------------------------------------------------------------------------------------------POWTARZA KAZDY WIERSZ BITMAPY zoom_int RAZY, ABY WYDLUZYC ZNAK-----------------------------------------------------------------------------
+		wydluz_znak:					;dopoki cl<zoom					
+		
+			push dx
+			push cx 			;zapisujemy bajt opisujacy wiersz bitmapy liter
+			mov cl, 0			;inicjalizujemy iterator przechodzacy po kolumnach litery
+			
+			;		----------------------------------------------------------------------------------------------------------------PRZECHODZI KAZDA KOLUMNE BITMAPY------------------------------------------------------------------------------------------------------
+			przejdz_kolumne_bitmapy: 		;dopokicl<8				
+				shr dh,1 ;dh = dh div 2 - w carry flag mamy teraz reszte z tego dzielenia 
+				jnc dalej ;jezele bit byl rowny 0 - czyli nie musimy go wypisywac
+				;jezeli bit byl rowny 1 czyli chcemy wyswietlic ten piksel
+					
+					;ZAPISUJEMY REJESTRY, KTORE ZOSTANA ZMIENIONE W TYM SEGMENCIE KODU
+					push di
+					push ax 
+					push bx
+					
+					
+					;W ds:[di] ZAPISUJEMY ZOOM
+					push ax
+					mov ax, seg zoom_int
+					mov ds, ax
+					pop ax
+					mov di, OFFSET zoom_int
+				
+				;WYLICZAMY (x,y) konkretnego wyswietlanego piksela
+					
+					;WYLICZAMY bx - wspolrzedna x
+					push dx
+					push ax
+					mov al, cl
+					mul byte ptr ds:[di]
+					mov dx,ax
+					add bx, dx	
+					pop ax
+					pop dx
+			
+					;WYLICZAMY ax - wspolrzedna y
+					push dx
+					push ax
+					mov al, ch
+					mul byte ptr ds:[di]
+					movzx dx,al
+					pop ax
+					add ax, dx		
+					pop dx
+				
+					;PRZECHODZIMY W PETLI, ABY POWTORZYC TEN PIKSEL zoom_int RAZY I POSZERZYC ZNAK
+					push cx					;zapisujemy glowny licznik (pzechodzacy po kwadratowej bitmapie opisujace znak o wielkosci 8x8 ) 
+					mov cl, 0				;initializujemy licznik cl, ktory bedzie przechodzi od 0 do zoom_int
+					
+					;------------------------------------------------------------------------------POWTARZA KAZDA KOLUMNE BITMAPY zoom_int RAZY, ABY POSZERZYC ZNAK-----------------------------------------------------------------------------------------------------
+					poszerz_znak: 					;dopoki cl<zoom_int							
+						call print_pixel
+						inc bx
+						inc cl
+						cmp cl, byte ptr ds:[di]
+						jl poszerz_znak
+					pop cx
+			
+					;PRZYWRACAMY ZAPISANE WARTOSCI REJESTROW
+					pop bx 
+					pop ax
+					pop di
+				dalej:	
+				
+				;CZESC KODU WSPOLNA ZAROWNO, GDY WYPISYWALISMY PIXEL, JAK I WTEDY, GDY NIE WYPISYWALISMY GO
+				inc cl						;	zwiekszamy licznik opisujacy numer kolumny bitmapy, ktora przetwarzamy
+				cmp cl,8	
+				jl przejdz_kolumne_bitmapy				;jezeli nie przeszlismy jeszcze wszystkich kolumn bitmapy to przechodzmy do nastepnej		
+			
+			pop cx					;odzyskujemy wartosc rejestru cl, iterujacego od 0 do wartosci zoom_int
+			inc cl
+			
+			;W CL ZAPISUJEMY ZOOM
+			push ax
+			mov ax, seg zoom_int
+			mov ds, ax
+			pop ax	
+			inc ax
+			mov di, OFFSET zoom_int
+			cmp cl, byte ptr ds:[di]	
+			pop dx				;odzyskujemy dh, w ktorym jest zapisany bajt opisujacy aktualnie przetwarzana bitmape znaku 
+			jl wydluz_znak			;jezeli niee powtorzylismy wiersza zoom_int razy to powtarzamy ten wiersz raz jeszcze
+		
+		pop ax					;odzyskujemy informacje o wspolrzednej y wypisywanego znaku
+		inc ch					; zwiekszamy licznik wierszy
+		cmp ch, 8
+		jl przejdz_wiersz_bitmapy			;jezeli nie wszystkie wiersze bitmapy zostaly przetworzone
+		
+	popa
+	ret
+
+
+print_pixel: 				;wypisuje bialy pixel w wspolrzednych opisywanych jako (bx, al)
+	pusha
+	mov cx,320 				;320 to szerokosc ekranu w trybie graficznym
+	mul cx 					; ax=cx*al
+	add ax,bx 				; ax+=bx, czyli w ax trzymamy teraz numer piksela, ktorego kolor chcemy ustawic
+	xchg si,ax
+	mov bx, 0a000h			;ustawiamy segment pamieci video
+	mov es, bx 				;w buforze es
+	mov word ptr es:[si], 0fh				;ustawiamy kolor na 0fh, czyli kolor bialy
+	popa
+	ret
+
+
+
+
+;----------------------------DODATKOWE FUNKCJE----------------------------------------------------------------------------------------------------------------------------------------
+
+
+
+zoom_string_to_int:					;funkcja zamienia string przechowywany w pamieci jako zoom na liczbe, ktora ten string opisuje. Liczba ta jest zapisywana jako zoom_int
+	
+	;ZAPISUJEMY WARTOSCI REJESTROW
+	push ax
+	push bx
+	push cx
+	push ds
+	push di
+	
+	
+	;W ds:[di] TRZYMAMY WSKAZANIE NA ZOOM
+	mov ax, seg zoom
+    mov ds, ax
+	mov di, offset zoom
+	mov ax, 0					;inicjalizujemy ax, w ktorym bedziemy przechowywac konwertowana liczbe
+	loop3:						;powtarzamy tak dlugo, jak 
+		mov bx, 0											;zerujemy bx, tak, aby moc korzystac z calego bx, pomimo, ze ustawiamy tylko bl
+		mov bl, byte ptr ds:[di]							;w bl zapisujemy znak ze stringa opisujacego zoom	
+		cmp bl, '$'
+		je koniec_funkcji_zoom_string_to_int 				;jezeli doszlismy do konca stringa
+		
+		
+		;SPRAWDZAMY CZY ZNAKI W TEKSCIE SA CYFRAMI
+		cmp bl, '0'
+		jl blad_zle_znaki_w_zoomie
+		cmp bl, '9'
+		jg blad_zle_znaki_w_zoomie
+		
+		
+		;ZAMIENIAMY KOD ASCII NA ODPOWIADAJACA MU CYFRE
+		sub bl, '0'
+		
+		mov cl, 10
+		mul cl												;ax=ax*10
+		add ax, bx											;ax+=bx
+		cmp ax, 25
+		jg blad_zly_zoom								;zoom przekracza 25, co oznacza, ze wysokosc tekstu musialaby przekracza 25*8=200 czyli dostepna wysokosc ekranu
+		inc di												;przechodzimy do kolejnego znaku w string zoom
+		jmp loop3
+		
+	koniec_funkcji_zoom_string_to_int:
+	cmp ax, 0
+	je blad_zly_zoom	
+	;ZAPISUJEMY SKONWERTOWANA LICZBE JAKO zoom_int
+	mov bx, seg zoom_int
+	mov ds, bx
+	mov di, offset zoom_int
+	mov byte ptr ds:[di], al
+	
+	
+	;PRZYWRACAMY WARTOSCI REJESTROW
+	pop di
+	pop ds
+	pop cx
+	pop bx
+	pop ax
+	ret
+
+ ; ----------------------------- WCZYTYWANIE DANYCH -------------------------
+ 
+ wczytanie_danych: 
+        mov di, 082h ; wskaznik na buffor z argumentami
+        xor cx, cx
+        mov cl, byte ptr ds:[080h] ; wpisanie do bl liczby znakow
+		cmp cl, 0
+		je blad_zla_liczba_argumentow
+        mov ax, seg dane1
+        mov es, ax ; extra segment
+   
+
+; -------------------------- WCZYTYWANIE ZOOM -------------------------------- 
+        mov si, offset zoom
+        call pomin_biale_znaki
+		cmp cl, 0
+		jz blad_zla_liczba_argumentow
+		mov bx, 0								;inicjalizujemy bx w ktorym bedziemy zapisywac liczbe juz przeczytanych znakow z wejscia
+    wczytaj_zoom:
+        mov al, byte ptr ds:[di]
+       
+        mov byte ptr es:[si], al 				;zapisujemy znak do zoomu
+		inc di									;przechodzimy do kolejnego znaku w tekscie zoom
+		inc bx
+		dec cl									
+		inc si									;przechodzimy do kolejnego bajtu w pamieci
+		cmp cl, 0
+		je blad_zla_liczba_argumentow					;jezeli nie ma juz znakow do wczytania
+		
+		
+		;NATRAFILISMY NA ZNAK BIALY I RESZTE TRAKTUJEMY JAKO DRUGI ARGUMENT
+		cmp byte ptr ds:[di], ' '				;spacja
+		je drugi_parametr
+		cmp byte ptr ds:[di], '	'				;tab
+		je drugi_parametr
+		cmp bx, 3 								;3, gdyz 3 to dlugosc wlasciwego tekstu opisujacego zoom (bez terminatora)
+		jge blad_zly_zoom
+		jmp wczytaj_zoom
+ 
+    ; -------------------------- WCZYTYWANIE TEKSTU --------------------------------
+	
+        inc di
+        dec cl
+        dec cl 
+    drugi_parametr:
+		;sprawdz czy jest bialy znak
+		mov al, byte ptr ds:[di]
+		cmp al, ' '								;spacja
+		je pomin_znak_bialy								
+		cmp al, '	'							;tab
+		je pomin_znak_bialy
+		jmp blad_zla_liczba_argumentow
+	
+	pomin_znak_bialy:	
+        call pomin_biale_znaki
+        mov si, offset tekst
+       
+        cmp cl, 1
+        jle blad_zla_liczba_argumentow
+        mov al, byte ptr ds:[di]
+ 
+    wczytaj_tekst: 
+        mov al, byte ptr ds:[di]			
+        mov byte ptr es:[si],al
+       
+        inc di  				; przechodzimy do kolejnego znaku w tekscie
+        inc si 					; przechodzimy do kolejnego bajtu w pamieci
+        loop wczytaj_tekst
+ 
+        ret
+   
+ 
+; -------------------------- DODATKOWE PROCEDURY -------------------------
+   
+pomin_biale_znaki:						;pomija znaki biale z tekstu trzymanego w ds:[di]
+    mov al, byte ptr ds:[di]			;w al trzymamy przetwarzany znak
+    cmp al, ' '							;spacja
+    jz znaleziono_znak_bialy
+    cmp al, '	'						;tab
+    jz znaleziono_znak_bialy
+	
+    ret
+ 
+znaleziono_znak_bialy:
+    inc di
+    dec cl
+    cmp cl, '$'							;jezeli dotarlismy do konca stringa
+    jz koniec_funkcji_znaleziony_bialy_znak
+    jmp pomin_biale_znaki
+	koniec_funkcji_znaleziony_bialy_znak:
+	ret 
+ 
+ 
+print: ; wypisuje string zakonczony znakiem $, ktorego offset znajduje sie w rejestrze dx
+	push ax
+	push ds
+	mov ax, seg dane1
+	mov ds, ax
+	mov ah, 9
+	int 21h
+	call print_enter
+	pop ds
+	pop ax
+	ret
+	
+print_enter:
+	mov dl, 10
+	call print_char
+	mov dl, 13
+	call print_char
+	ret
+	
+print_char:
+	mov ah, 2
+	int 21h
+	ret
+ 
+;--------------------------FUNKCJE WYPISUJACE INFORMACJE O BLEDACH--------------------------------------
+blad_zla_liczba_argumentow:
+    mov dx, offset error_zla_liczba_argumentow
+    call print
+    jmp koniec_programu
+   
+blad_zly_zoom:
+    mov dx, offset error_zly_zoom
+    call print
+    jmp koniec_programu
+	
+blad_zle_znaki_w_zoomie:
+	mov dx, offset error_zle_znaki_w_zoomie
+    call print
+    jmp koniec_programu  
+  
+blad_brak_miejsca:
+	mov ax,3
+	int 10h
+    mov dx, offset error_brak_miejsca
+    call print
+	;call wait_for_key
+    jmp koniec_programu  
+	
+	
+
+code1 ends
+;================================================KONIEC  SEGMENTU   KODU===================================================================================
+
+
+
+
+;===========================SEGMENT STOSU============================================================
+stos1 segment stack
+	dw 200 dup(?)
+wstosu  dw ?
+stos1 ends
+;===========================KONIEC SEGMENTU STOSU====================================================
+END start
